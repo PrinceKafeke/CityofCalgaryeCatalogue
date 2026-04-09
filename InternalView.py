@@ -20,6 +20,7 @@ st.set_page_config(
 # STATIC ASSETS
 # =========================================================
 LOGO_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/calgary_logo.png"
+PLACEHOLDER_IMAGE_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/images/placeholder.png"
 
 # =========================================================
 # STYLE
@@ -334,6 +335,7 @@ def add_to_cart(row, col_map, qty_to_add):
     if pd.isna(available) or int(available) <= 0:
         return False, "Item is not available for ordering."
     available = int(available)
+
     current_in_cart = st.session_state.cart.get(item_id, {}).get("qty", 0)
 
     if qty_to_add <= 0:
@@ -344,7 +346,9 @@ def add_to_cart(row, col_map, qty_to_add):
 
     unit_cost = np.nan
     if unit_cost_col and unit_cost_col in row.index:
-        unit_cost = pd.to_numeric(pd.Series([row.get(unit_cost_col, np.nan)]), errors="coerce").iloc[0]
+        unit_cost = pd.to_numeric(
+            pd.Series([row.get(unit_cost_col, np.nan)]), errors="coerce"
+        ).iloc[0]
 
     st.session_state.cart[item_id] = {
         "item": item_id,
@@ -405,6 +409,7 @@ def checkout_cart(customer_name, department, col_map, whmis_confirmed=False):
                 return False, "This cart includes WHMIS-controlled item(s). Please confirm WHMIS before submitting."
 
         df.at[idx, qty_col] = max(0, current_on_hand - order_qty)
+
         if avail_col and avail_col in df.columns:
             df.at[idx, avail_col] = max(0, current_avail - order_qty)
 
@@ -419,9 +424,13 @@ def checkout_cart(customer_name, department, col_map, whmis_confirmed=False):
         })
 
     st.session_state.inventory_df = df
+
     if order_rows:
         new_orders = pd.DataFrame(order_rows)
-        st.session_state.orders_log = pd.concat([new_orders, st.session_state.orders_log], ignore_index=True)
+        st.session_state.orders_log = pd.concat(
+            [new_orders, st.session_state.orders_log],
+            ignore_index=True
+        )
 
     st.session_state.cart = {}
     refresh_inventory()
@@ -431,6 +440,7 @@ def checkout_cart(customer_name, department, col_map, whmis_confirmed=False):
 def refresh_inventory():
     if "inventory_df" not in st.session_state or "col_map" not in st.session_state:
         return
+
     st.session_state.inventory_view = compute_inventory_metrics(
         st.session_state.inventory_df.copy(),
         st.session_state.col_map,
@@ -442,6 +452,30 @@ def to_excel_bytes(df_to_export: pd.DataFrame) -> bytes:
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df_to_export.to_excel(writer, index=False, sheet_name="Orders")
     return buffer.getvalue()
+
+
+def build_image_lookup(image_map_df):
+    if image_map_df is None or image_map_df.empty:
+        return {}
+
+    temp = image_map_df.copy()
+    temp.columns = [str(c).strip() for c in temp.columns]
+
+    required_cols = {"Item", "image_url"}
+    if not required_cols.issubset(set(temp.columns)):
+        return {}
+
+    temp["Item"] = temp["Item"].astype(str).str.strip()
+    temp["image_url"] = temp["image_url"].astype(str).str.strip()
+
+    temp = temp[(temp["Item"] != "") & (temp["image_url"] != "")]
+    return dict(zip(temp["Item"], temp["image_url"]))
+
+
+def get_item_image_url(row, col_map):
+    item_col = col_map.get("Item")
+    item_id = safe_string(row.get(item_col, "")) if item_col else ""
+    return st.session_state.get("image_lookup", {}).get(item_id, PLACEHOLDER_IMAGE_URL)
 
 # =========================================================
 # REQUIRED UPLOAD GATE
@@ -465,6 +499,37 @@ except Exception as e:
 
 raw_df.columns = [str(c).strip() for c in raw_df.columns]
 
+# =========================================================
+# OPTIONAL IMAGE MAP UPLOAD
+# =========================================================
+st.markdown("### Optional item image mapping file")
+image_map_file = st.file_uploader(
+    "Upload CSV with columns: Item, image_url",
+    type=["csv"],
+    help="Optional file that maps an inventory Item to an image URL. Items not listed use the placeholder image.",
+)
+
+if image_map_file is not None:
+    try:
+        image_map_df = pd.read_csv(image_map_file)
+    except Exception as e:
+        st.error(f"Could not read the image mapping file: {e}")
+        st.stop()
+else:
+    image_map_df = pd.DataFrame(columns=["Item", "image_url"])
+
+st.session_state.image_lookup = build_image_lookup(image_map_df)
+
+with st.expander("Image mapping format"):
+    st.code(
+        "Item,image_url\n"
+        "100001,https://raw.githubusercontent.com/your-repo/main/images/item_100001.png\n"
+        "100002,https://raw.githubusercontent.com/your-repo/main/images/item_100002.png\n"
+    )
+
+# =========================================================
+# COLUMN MAP
+# =========================================================
 expected_cols = {
     "Item": ["Item"],
     "Name": ["Descript", "Description", "Name", "Item Name"],
@@ -678,6 +743,7 @@ if tokens:
     for logical in ["Item", "Name", "Category", "Vendor Name", "Location", "Manufacturer", "Code"]:
         if logical in col_map:
             search_cols.append(col_map[logical])
+
     search_cols = unique_preserve_order(search_cols)
 
     if search_cols:
@@ -735,7 +801,12 @@ with st.sidebar.expander("🛒 Cart Summary", expanded=False):
             elif cart_has_whmis and not whmis_confirmed:
                 st.warning("Please confirm WHMIS certification before submitting this order.")
             else:
-                ok, msg = checkout_cart(sidebar_requestor_name, sidebar_department, col_map, whmis_confirmed=whmis_confirmed)
+                ok, msg = checkout_cart(
+                    sidebar_requestor_name,
+                    sidebar_department,
+                    col_map,
+                    whmis_confirmed=whmis_confirmed
+                )
                 if ok:
                     st.success(msg)
                     st.rerun()
@@ -827,7 +898,12 @@ else:
         elif main_cart_has_whmis and not main_whmis_confirmed:
             st.warning("Please confirm WHMIS certification before submitting this order.")
         else:
-            ok, msg = checkout_cart(requestor_name, department_name, col_map, whmis_confirmed=main_whmis_confirmed)
+            ok, msg = checkout_cart(
+                requestor_name,
+                department_name,
+                col_map,
+                whmis_confirmed=main_whmis_confirmed
+            )
             if ok:
                 st.success(msg)
                 st.rerun()
@@ -870,12 +946,17 @@ def render_product_card(row, idx_prefix, employee_view=False):
     status = row.get("Stock_Status", "Unknown")
     unit_cost = row.get(unit_cost_col, "") if unit_cost_col else ""
     currency = safe_string(row.get(currency_col, "")) if currency_col else ""
+
     icon = category_icon(category_val)
+    title_text = name_val or item_val or "Unnamed Item"
+    image_url = get_item_image_url(row, col_map)
+
+    st.image(image_url, use_container_width=True)
 
     st.markdown(
         f"""
         <div class="product-card">
-            <div class="product-title">{icon} {name_val or item_val or "Unnamed Item"}</div>
+            <div class="product-title">{icon} {title_text}</div>
             <div class="product-sub"><b>Item:</b> {item_val or "N/A"}</div>
             <div class="product-sub"><b>Category:</b> {category_val or "N/A"}</div>
             <div class="product-sub"><b>Supplier:</b> {vendor_val or "N/A"}</div>
@@ -944,6 +1025,7 @@ def render_product_card(row, idx_prefix, employee_view=False):
         )
 
     max_qty = int(qty_avail) if pd.notna(qty_avail) and qty_avail > 0 else 0
+
     c1, c2 = st.columns([1, 1])
     with c1:
         qty_to_add = st.number_input(
@@ -955,6 +1037,7 @@ def render_product_card(row, idx_prefix, employee_view=False):
             key=f"qty_add_{idx_prefix}_{item_val}",
             disabled=(max_qty == 0),
         )
+
     with c2:
         if st.button("Add to cart", key=f"add_{idx_prefix}_{item_val}", disabled=(max_qty == 0)):
             ok, msg = add_to_cart(row, col_map, int(qty_to_add))
@@ -969,6 +1052,7 @@ def render_product_card(row, idx_prefix, employee_view=False):
 # =========================================================
 if not employee_view:
     st.markdown('<div class="section-box"><div class="section-title">Catalogue search</div>', unsafe_allow_html=True)
+
     browse_df = filtered_df.head(30)
     if browse_df.empty:
         st.info("No items match the current filters.")
@@ -977,6 +1061,7 @@ if not employee_view:
         for i, (_, row) in enumerate(browse_df.iterrows()):
             with browse_cols[i % 3]:
                 render_product_card(row, f"browse_{i}", employee_view=False)
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
@@ -1001,6 +1086,7 @@ if employee_view:
         "Sort results by",
         ["Availability", "Avg Daily Usage", "Name", "Unit cost", "Days of Supply"]
     )
+
     employee_df = filtered_df.copy()
 
     if employee_sort_option == "Availability":
@@ -1021,6 +1107,7 @@ if employee_view:
         [12, 16, 20, 24, 28, 30, 40, 50, 75, 100],
         index=5,
     )
+
     employee_grid_rows = employee_df.head(employee_results_to_show)
 
     if employee_grid_rows.empty:
@@ -1033,11 +1120,15 @@ if employee_view:
 
         remaining_results = len(employee_df) - len(employee_grid_rows)
         if remaining_results > 0:
-            st.caption(f"Showing {len(employee_grid_rows)} of {len(employee_df)} results. Refine filters or increase the display count to see more.")
+            st.caption(
+                f"Showing {len(employee_grid_rows)} of {len(employee_df)} results. "
+                f"Refine filters or increase the display count to see more."
+            )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="section-box"><div class="section-title">Submitted employee requests</div>', unsafe_allow_html=True)
+
     if st.session_state.orders_log.empty:
         st.info("No employee requests have been submitted in this session yet.")
     else:
