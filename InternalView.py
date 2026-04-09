@@ -21,6 +21,7 @@ st.set_page_config(
 # =========================================================
 LOGO_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/calgary_logo.png"
 PLACEHOLDER_IMAGE_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/images/placeholder.png"
+IMAGE_MAP_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/item_image_mapping.csv"
 
 # =========================================================
 # STYLE
@@ -170,7 +171,6 @@ def safe_string(x):
         return ""
     return str(x).strip()
 
-
 def build_col_map(df, expected_cols):
     col_map = {}
     for logical_name, candidates in expected_cols.items():
@@ -179,7 +179,6 @@ def build_col_map(df, expected_cols):
                 col_map[logical_name] = c
                 break
     return col_map
-
 
 def unique_preserve_order(cols):
     seen = set()
@@ -190,10 +189,8 @@ def unique_preserve_order(cols):
             seen.add(c)
     return out
 
-
 def tokenize_search(query):
     return [t for t in re.findall(r"\w+", safe_string(query).lower()) if t]
-
 
 def category_icon(category_value):
     c = safe_string(category_value).lower()
@@ -210,7 +207,6 @@ def category_icon(category_value):
     if any(k in c for k in ["office", "paper", "admin"]):
         return "📎"
     return "📦"
-
 
 def stock_status_from_row(row):
     qty = row.get("Qty_On_Hand_Num", np.nan)
@@ -236,7 +232,6 @@ def stock_status_from_row(row):
 
     return "Unknown"
 
-
 def stock_badge_html(status):
     s = safe_string(status).lower()
     if "healthy" in s:
@@ -248,7 +243,6 @@ def stock_badge_html(status):
     if "low" in s or "risk" in s:
         return '<span class="pill pill-red">Low Stock</span>'
     return '<span class="pill pill-grey">Unknown</span>'
-
 
 def compute_inventory_metrics(df, col_map):
     out = df.copy()
@@ -304,10 +298,8 @@ def compute_inventory_metrics(df, col_map):
     out["Stock_Status"] = out.apply(stock_status_from_row, axis=1)
     return out
 
-
 def cart_total_items(cart):
     return int(sum(item["qty"] for item in cart.values()))
-
 
 def cart_total_value(cart):
     total = 0.0
@@ -317,7 +309,6 @@ def cart_total_value(cart):
         if pd.notna(unit_cost):
             total += float(unit_cost) * qty
     return total
-
 
 def add_to_cart(row, col_map, qty_to_add):
     item_col = col_map.get("Item")
@@ -361,11 +352,9 @@ def add_to_cart(row, col_map, qty_to_add):
     }
     return True, "Added to cart."
 
-
 def remove_from_cart(item_id):
     if item_id in st.session_state.cart:
         del st.session_state.cart[item_id]
-
 
 def checkout_cart(customer_name, department, col_map, whmis_confirmed=False):
     if not st.session_state.cart:
@@ -436,16 +425,13 @@ def checkout_cart(customer_name, department, col_map, whmis_confirmed=False):
     refresh_inventory()
     return True, "Checkout complete."
 
-
 def refresh_inventory():
     if "inventory_df" not in st.session_state or "col_map" not in st.session_state:
         return
-
     st.session_state.inventory_view = compute_inventory_metrics(
         st.session_state.inventory_df.copy(),
         st.session_state.col_map,
     )
-
 
 def to_excel_bytes(df_to_export: pd.DataFrame) -> bytes:
     buffer = BytesIO()
@@ -453,29 +439,84 @@ def to_excel_bytes(df_to_export: pd.DataFrame) -> bytes:
         df_to_export.to_excel(writer, index=False, sheet_name="Orders")
     return buffer.getvalue()
 
+def to_csv_bytes(df_to_export: pd.DataFrame) -> bytes:
+    return df_to_export.to_csv(index=False).encode("utf-8")
 
-def build_image_lookup(image_map_df):
-    if image_map_df is None or image_map_df.empty:
-        return {}
+@st.cache_data(show_spinner=False)
+def load_image_map_from_github():
+    try:
+        image_map_df = pd.read_csv(IMAGE_MAP_URL)
+        image_map_df.columns = [str(c).strip() for c in image_map_df.columns]
+        if "Item" not in image_map_df.columns or "image_url" not in image_map_df.columns:
+            return pd.DataFrame(columns=["Item", "image_url"])
+        image_map_df["Item"] = image_map_df["Item"].astype(str).str.strip()
+        image_map_df["image_url"] = image_map_df["image_url"].astype(str).str.strip()
+        image_map_df = image_map_df[["Item", "image_url"]].drop_duplicates(subset=["Item"], keep="last")
+        return image_map_df
+    except Exception:
+        return pd.DataFrame(columns=["Item", "image_url"])
 
-    temp = image_map_df.copy()
-    temp.columns = [str(c).strip() for c in temp.columns]
+def sync_image_lookup():
+    image_map_df = st.session_state.get("image_map_df", pd.DataFrame(columns=["Item", "image_url"])).copy()
+    if image_map_df.empty:
+        st.session_state.image_lookup = {}
+        return
 
-    required_cols = {"Item", "image_url"}
-    if not required_cols.issubset(set(temp.columns)):
-        return {}
+    image_map_df.columns = [str(c).strip() for c in image_map_df.columns]
+    if "Item" not in image_map_df.columns or "image_url" not in image_map_df.columns:
+        st.session_state.image_lookup = {}
+        return
 
-    temp["Item"] = temp["Item"].astype(str).str.strip()
-    temp["image_url"] = temp["image_url"].astype(str).str.strip()
+    image_map_df["Item"] = image_map_df["Item"].astype(str).str.strip()
+    image_map_df["image_url"] = image_map_df["image_url"].astype(str).str.strip()
+    image_map_df = image_map_df[(image_map_df["Item"] != "") & (image_map_df["image_url"] != "")]
+    image_map_df = image_map_df.drop_duplicates(subset=["Item"], keep="last")
 
-    temp = temp[(temp["Item"] != "") & (temp["image_url"] != "")]
-    return dict(zip(temp["Item"], temp["image_url"]))
-
+    st.session_state.image_map_df = image_map_df
+    st.session_state.image_lookup = dict(zip(image_map_df["Item"], image_map_df["image_url"]))
 
 def get_item_image_url(row, col_map):
     item_col = col_map.get("Item")
     item_id = safe_string(row.get(item_col, "")) if item_col else ""
     return st.session_state.get("image_lookup", {}).get(item_id, PLACEHOLDER_IMAGE_URL)
+
+def upsert_image_mapping(item_id, image_url):
+    item_id = safe_string(item_id)
+    image_url = safe_string(image_url)
+
+    if not item_id or not image_url:
+        return False, "Item and image URL are required."
+
+    current_df = st.session_state.get("image_map_df", pd.DataFrame(columns=["Item", "image_url"])).copy()
+    if current_df.empty:
+        current_df = pd.DataFrame(columns=["Item", "image_url"])
+
+    current_df["Item"] = current_df.get("Item", pd.Series(dtype=str)).astype(str).str.strip()
+    current_df["image_url"] = current_df.get("image_url", pd.Series(dtype=str)).astype(str).str.strip()
+
+    current_df = current_df[current_df["Item"] != item_id]
+    new_row = pd.DataFrame([{"Item": item_id, "image_url": image_url}])
+    current_df = pd.concat([current_df, new_row], ignore_index=True)
+
+    st.session_state.image_map_df = current_df
+    sync_image_lookup()
+    return True, "Image mapping saved for this session."
+
+def remove_image_mapping(item_id):
+    item_id = safe_string(item_id)
+    current_df = st.session_state.get("image_map_df", pd.DataFrame(columns=["Item", "image_url"])).copy()
+    if current_df.empty:
+        return False, "No image mapping exists."
+
+    current_df["Item"] = current_df["Item"].astype(str).str.strip()
+    new_df = current_df[current_df["Item"] != item_id].copy()
+
+    if len(new_df) == len(current_df):
+        return False, "No image mapping found for that item."
+
+    st.session_state.image_map_df = new_df
+    sync_image_lookup()
+    return True, "Image mapping removed for this session."
 
 # =========================================================
 # REQUIRED UPLOAD GATE
@@ -498,34 +539,6 @@ except Exception as e:
     st.stop()
 
 raw_df.columns = [str(c).strip() for c in raw_df.columns]
-
-# =========================================================
-# OPTIONAL IMAGE MAP UPLOAD
-# =========================================================
-st.markdown("### Optional item image mapping file")
-image_map_file = st.file_uploader(
-    "Upload CSV with columns: Item, image_url",
-    type=["csv"],
-    help="Optional file that maps an inventory Item to an image URL. Items not listed use the placeholder image.",
-)
-
-if image_map_file is not None:
-    try:
-        image_map_df = pd.read_csv(image_map_file)
-    except Exception as e:
-        st.error(f"Could not read the image mapping file: {e}")
-        st.stop()
-else:
-    image_map_df = pd.DataFrame(columns=["Item", "image_url"])
-
-st.session_state.image_lookup = build_image_lookup(image_map_df)
-
-with st.expander("Image mapping format"):
-    st.code(
-        "Item,image_url\n"
-        "100001,https://raw.githubusercontent.com/your-repo/main/images/item_100001.png\n"
-        "100002,https://raw.githubusercontent.com/your-repo/main/images/item_100002.png\n"
-    )
 
 # =========================================================
 # COLUMN MAP
@@ -575,6 +588,10 @@ if "orders_log" not in st.session_state:
         columns=["Order Time", "Customer Name", "Department", "Item", "Description", "Order Qty"]
     )
 
+if "image_map_df" not in st.session_state:
+    st.session_state.image_map_df = load_image_map_from_github().copy()
+    sync_image_lookup()
+
 # =========================================================
 # CONSTANTS
 # =========================================================
@@ -608,17 +625,29 @@ with title_col:
         """
         <div class="header-box">
             <div class="header-title">City of Calgary General Stores</div>
-            <div class="header-subtitle">Upload-driven ordering catalogue with optional employee detail view</div>
+            <div class="header-subtitle">Business unit ordering with internal planning and warehouse views</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 # =========================================================
-# EMPLOYEE VIEW TOGGLE
+# VIEW SELECTOR
 # =========================================================
 st.sidebar.header("View Options")
-employee_view = st.sidebar.toggle("Employee View", value=False)
+
+user_role = st.sidebar.selectbox(
+    "Select View",
+    [
+        "Business Unit View",
+        "Inventory Planning View",
+        "Warehouse Management View",
+    ]
+)
+
+is_business_unit_view = user_role == "Business Unit View"
+is_internal_view = user_role in ["Inventory Planning View", "Warehouse Management View"]
+
 show_low_stock_only = st.sidebar.checkbox("Low stock only", value=False)
 
 # =========================================================
@@ -664,8 +693,10 @@ with top_right:
 # =========================================================
 # HERO
 # =========================================================
-if employee_view:
-    hero_sub = "Browse the same catalogue layout with internal inventory insights from the uploaded PeopleSoft file."
+if user_role == "Inventory Planning View":
+    hero_sub = "Review inventory requirements, stocking strategies, replenishment classes, and stockout risk."
+elif user_role == "Warehouse Management View":
+    hero_sub = "Review storage location, available quantities, handling-related details, and warehouse visibility."
 else:
     hero_sub = "Browse General Stores inventory, compare availability, add items to cart, and submit requests by department or business unit."
 
@@ -743,7 +774,6 @@ if tokens:
     for logical in ["Item", "Name", "Category", "Vendor Name", "Location", "Manufacturer", "Code"]:
         if logical in col_map:
             search_cols.append(col_map[logical])
-
     search_cols = unique_preserve_order(search_cols)
 
     if search_cols:
@@ -754,29 +784,99 @@ if tokens:
         filtered_df = filtered_df[mask]
 
 # =========================================================
-# SIDEBAR CART
+# BUSINESS UNIT CART SIDEBAR ONLY
 # =========================================================
-with st.sidebar.expander("🛒 Cart Summary", expanded=False):
-    st.metric("Items in Cart", cart_total_items(st.session_state.cart))
-    st.metric("Estimated Value", f"{cart_total_value(st.session_state.cart):,.2f}")
-    st.caption("Estimated value uses the Unit Cost field from the uploaded PeopleSoft file. That cost may represent a pack, case, box, or other inventory unit depending on the item setup.")
+if is_business_unit_view:
+    with st.sidebar.expander("🛒 Cart Summary", expanded=False):
+        st.metric("Items in Cart", cart_total_items(st.session_state.cart))
+        st.metric("Estimated Value", f"{cart_total_value(st.session_state.cart):,.2f}")
+        st.caption("Estimated value uses the Unit Cost field from the uploaded PeopleSoft file. That cost may represent a pack, case, box, or other inventory unit depending on the item setup.")
 
-    if st.session_state.cart:
-        st.markdown("---")
+        if st.session_state.cart:
+            st.markdown("---")
+            for item_id, cart_item in st.session_state.cart.items():
+                st.markdown(f"**{cart_item['name'] or item_id}**")
+                st.caption(f"Item: {item_id}")
+                st.caption(f"Qty: {cart_item['qty']}")
+                if st.button("Remove", key=f"sidebar_remove_{item_id}"):
+                    remove_from_cart(item_id)
+                    st.rerun()
+        else:
+            st.info("Your cart is empty.")
+
+# =========================================================
+# METRICS
+# =========================================================
+low_stock_count = int((filtered_df["Stock_Status"] == "Low / Risk of Stockout").sum())
+
+if user_role == "Business Unit View":
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Items Shown", len(filtered_df))
+    m2.metric("Low Stock", low_stock_count)
+    m3.metric("Cart Items", cart_total_items(st.session_state.cart))
+elif user_role == "Inventory Planning View":
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Items Shown", len(filtered_df))
+    m2.metric("Stockout Risk Items", low_stock_count)
+    m3.metric("Slow Moving Items", int(filtered_df["Slow_Moving_Flag"].fillna(False).sum()))
+    m4.metric("WHMIS Items", int(filtered_df["WHMIS_Required"].fillna(False).sum()))
+else:
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Items Shown", len(filtered_df))
+    m2.metric("Low Stock", low_stock_count)
+    m3.metric("Locations Represented", filtered_df[col_map["Location"]].nunique() if col_map.get("Location") and col_map["Location"] in filtered_df.columns else 0)
+    m4.metric("WHMIS Items", int(filtered_df["WHMIS_Required"].fillna(False).sum()))
+
+# =========================================================
+# BUSINESS UNIT CART SECTION ONLY
+# =========================================================
+if is_business_unit_view:
+    st.markdown('<div class="section-box"><div class="section-title">🛒 Cart & Checkout</div>', unsafe_allow_html=True)
+
+    if not st.session_state.cart:
+        st.info("Your cart is empty.")
+    else:
+        cart_rows = []
         for item_id, cart_item in st.session_state.cart.items():
-            st.markdown(f"**{cart_item['name'] or item_id}**")
-            st.caption(f"Item: {item_id}")
-            st.caption(f"Qty: {cart_item['qty']}")
-            if st.button("Remove", key=f"sidebar_remove_{item_id}"):
-                remove_from_cart(item_id)
-                st.rerun()
+            unit_cost = cart_item.get("unit_cost", np.nan)
+            qty = cart_item.get("qty", 0)
+            line_total = float(unit_cost) * qty if pd.notna(unit_cost) else np.nan
+
+            cart_rows.append({
+                "Item": item_id,
+                "Description": cart_item["name"],
+                "Category": cart_item["category"],
+                "Supplier": cart_item["vendor"],
+                "Qty": qty,
+                "Unit Cost": unit_cost,
+                "Currency": cart_item["currency"],
+                "Line Total": line_total,
+            })
+
+        cart_df = pd.DataFrame(cart_rows)
+        st.dataframe(cart_df, use_container_width=True, height=220)
+
+        remove_cols = st.columns(min(3, len(st.session_state.cart)))
+        for i, (item_id, cart_item) in enumerate(st.session_state.cart.items()):
+            with remove_cols[i % len(remove_cols)]:
+                if st.button(f"Remove {cart_item['name'] or item_id}", key=f"remove_main_{item_id}"):
+                    remove_from_cart(item_id)
+                    st.rerun()
 
         st.markdown("---")
-        sidebar_first_name = st.text_input("First name", key="sidebar_cart_first_name")
-        sidebar_last_name = st.text_input("Last name", key="sidebar_cart_last_name")
-        sidebar_department = st.selectbox("Department / Business Unit", BUSINESS_UNITS, key="sidebar_cart_department")
+        d1, d2 = st.columns(2)
+        d1.metric("Total Cart Items", cart_total_items(st.session_state.cart))
+        d2.metric("Estimated Value", f"{cart_total_value(st.session_state.cart):,.2f}")
 
-        cart_has_whmis = False
+        c1, c2 = st.columns(2)
+        with c1:
+            first_name = st.text_input("First name", key="main_cart_first_name")
+        with c2:
+            last_name = st.text_input("Last name", key="main_cart_last_name")
+
+        department_name = st.selectbox("Department / Business Unit", BUSINESS_UNITS, key="main_cart_department")
+
+        main_cart_has_whmis = False
         item_col = col_map.get("Item")
         msds_col = col_map.get("MSDS ID")
         if item_col and msds_col and item_col in st.session_state.inventory_df.columns and msds_col in st.session_state.inventory_df.columns:
@@ -785,137 +885,40 @@ with st.sidebar.expander("🛒 Cart Summary", expanded=False):
                     st.session_state.inventory_df[item_col].astype(str) == str(cart_item_id)
                 ]
                 if not whmis_match.empty and safe_string(whmis_match.iloc[0][msds_col]):
-                    cart_has_whmis = True
+                    main_cart_has_whmis = True
                     break
 
-        whmis_confirmed = False
-        if cart_has_whmis:
+        main_whmis_confirmed = False
+        if main_cart_has_whmis:
             st.warning("This cart contains WHMIS-controlled item(s).")
-            whmis_confirmed = st.checkbox("I have WHMIS certification", key="sidebar_whmis_confirmed")
+            main_whmis_confirmed = st.checkbox("I have WHMIS certification", key="main_whmis_confirmed")
 
-        sidebar_requestor_name = f"{safe_string(sidebar_first_name)} {safe_string(sidebar_last_name)}".strip()
+        requestor_name = f"{safe_string(first_name)} {safe_string(last_name)}".strip()
 
-        if st.button("Submit order request", key="sidebar_submit_order"):
-            if not safe_string(sidebar_first_name) or not safe_string(sidebar_last_name):
+        if st.button("Submit order request", key="main_submit_order"):
+            if not safe_string(first_name) or not safe_string(last_name):
                 st.warning("Please enter both a first and last name.")
-            elif cart_has_whmis and not whmis_confirmed:
+            elif main_cart_has_whmis and not main_whmis_confirmed:
                 st.warning("Please confirm WHMIS certification before submitting this order.")
             else:
                 ok, msg = checkout_cart(
-                    sidebar_requestor_name,
-                    sidebar_department,
+                    requestor_name,
+                    department_name,
                     col_map,
-                    whmis_confirmed=whmis_confirmed
+                    whmis_confirmed=main_whmis_confirmed
                 )
                 if ok:
                     st.success(msg)
                     st.rerun()
                 else:
                     st.error(msg)
-    else:
-        st.info("Your cart is empty.")
 
-# =========================================================
-# METRICS
-# =========================================================
-low_stock_count = int((filtered_df["Stock_Status"] == "Low / Risk of Stockout").sum())
-
-m1, m2, m3 = st.columns(3)
-m1.metric("Items Shown", len(filtered_df))
-m2.metric("Low Stock", low_stock_count)
-m3.metric("Cart Items", cart_total_items(st.session_state.cart))
-
-# =========================================================
-# MAIN CART SECTION
-# =========================================================
-st.markdown('<div class="section-box"><div class="section-title">🛒 Cart & Checkout</div>', unsafe_allow_html=True)
-
-if not st.session_state.cart:
-    st.info("Your cart is empty.")
-else:
-    cart_rows = []
-    for item_id, cart_item in st.session_state.cart.items():
-        unit_cost = cart_item.get("unit_cost", np.nan)
-        qty = cart_item.get("qty", 0)
-        line_total = float(unit_cost) * qty if pd.notna(unit_cost) else np.nan
-
-        cart_rows.append({
-            "Item": item_id,
-            "Description": cart_item["name"],
-            "Category": cart_item["category"],
-            "Supplier": cart_item["vendor"],
-            "Qty": qty,
-            "Unit Cost": unit_cost,
-            "Currency": cart_item["currency"],
-            "Line Total": line_total,
-        })
-
-    cart_df = pd.DataFrame(cart_rows)
-    st.dataframe(cart_df, use_container_width=True, height=220)
-
-    remove_cols = st.columns(min(3, len(st.session_state.cart)))
-    for i, (item_id, cart_item) in enumerate(st.session_state.cart.items()):
-        with remove_cols[i % len(remove_cols)]:
-            if st.button(f"Remove {cart_item['name'] or item_id}", key=f"remove_main_{item_id}"):
-                remove_from_cart(item_id)
-                st.rerun()
-
-    st.markdown("---")
-    d1, d2 = st.columns(2)
-    d1.metric("Total Cart Items", cart_total_items(st.session_state.cart))
-    d2.metric("Estimated Value", f"{cart_total_value(st.session_state.cart):,.2f}")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        first_name = st.text_input("First name", key="main_cart_first_name")
-    with c2:
-        last_name = st.text_input("Last name", key="main_cart_last_name")
-
-    department_name = st.selectbox("Department / Business Unit", BUSINESS_UNITS, key="main_cart_department")
-
-    main_cart_has_whmis = False
-    item_col = col_map.get("Item")
-    msds_col = col_map.get("MSDS ID")
-    if item_col and msds_col and item_col in st.session_state.inventory_df.columns and msds_col in st.session_state.inventory_df.columns:
-        for cart_item_id in st.session_state.cart.keys():
-            whmis_match = st.session_state.inventory_df[
-                st.session_state.inventory_df[item_col].astype(str) == str(cart_item_id)
-            ]
-            if not whmis_match.empty and safe_string(whmis_match.iloc[0][msds_col]):
-                main_cart_has_whmis = True
-                break
-
-    main_whmis_confirmed = False
-    if main_cart_has_whmis:
-        st.warning("This cart contains WHMIS-controlled item(s).")
-        main_whmis_confirmed = st.checkbox("I have WHMIS certification", key="main_whmis_confirmed")
-
-    requestor_name = f"{safe_string(first_name)} {safe_string(last_name)}".strip()
-
-    if st.button("Submit order request", key="main_submit_order"):
-        if not safe_string(first_name) or not safe_string(last_name):
-            st.warning("Please enter both a first and last name.")
-        elif main_cart_has_whmis and not main_whmis_confirmed:
-            st.warning("Please confirm WHMIS certification before submitting this order.")
-        else:
-            ok, msg = checkout_cart(
-                requestor_name,
-                department_name,
-                col_map,
-                whmis_confirmed=main_whmis_confirmed
-            )
-            if ok:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
-
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
 # PRODUCT CARD RENDERER
 # =========================================================
-def render_product_card(row, idx_prefix, employee_view=False):
+def render_product_card(row, idx_prefix, user_role="Business Unit View"):
     item_col = col_map.get("Item")
     name_col = col_map.get("Name")
     category_col = col_map.get("Category")
@@ -970,21 +973,17 @@ def render_product_card(row, idx_prefix, employee_view=False):
         unsafe_allow_html=True,
     )
 
-    if employee_view:
+    if user_role == "Inventory Planning View":
         status_current = safe_string(row.get(status_current_col, "")) if status_current_col else ""
         replen_cls = safe_string(row.get(replen_cls_col, "")) if replen_cls_col else ""
         special_inst = safe_string(row.get(special_inst_col, "")) if special_inst_col else ""
         end_use_val = safe_string(row.get(end_use_col, "")) if end_use_col else ""
         manufacturer = safe_string(row.get(manufacturer_col, "")) if manufacturer_col else ""
-        mfg_id = safe_string(row.get(mfg_id_col, "")) if mfg_id_col else ""
-        mfg_item = safe_string(row.get(mfg_item_col, "")) if mfg_item_col else ""
         code_val = safe_string(row.get(code_col, "")) if code_col else ""
         comm_code = safe_string(row.get(comm_code_col, "")) if comm_code_col else ""
-        msds_val = safe_string(row.get(msds_col, "")) if msds_col else ""
 
         avg_daily_usage = row.get("Avg_Daily_Usage", np.nan)
         days_supply = row.get("Days_of_Supply", np.nan)
-        whmis_required = bool(row.get("WHMIS_Required", False))
         slow_moving = bool(row.get("Slow_Moving_Flag", False))
 
         st.markdown(
@@ -994,64 +993,75 @@ def render_product_card(row, idx_prefix, employee_view=False):
                 <div class="product-sub"><b>Days Until Stockout:</b> {round(days_supply, 1) if pd.notna(days_supply) else 'N/A'}</div>
                 <div class="product-sub"><b>Stock Insight:</b> {status}</div>
                 <div class="product-sub"><b>Slow Moving:</b> {'Yes' if slow_moving else 'No'}</div>
-                <div class="product-sub"><b>WHMIS Required:</b> {'Yes' if whmis_required else 'No'}</div>
+                <div class="product-sub"><b>Replen Cls:</b> {replen_cls or 'N/A'}</div>
+                <div class="product-sub"><b>Status Current:</b> {status_current or 'N/A'}</div>
+                <div class="product-sub"><b>End Use Code:</b> {end_use_val or 'N/A'}</div>
+                <div class="product-sub"><b>Manufacturer:</b> {manufacturer or 'N/A'}</div>
+                <div class="product-sub"><b>Code:</b> {code_val or 'N/A'}</div>
+                <div class="product-sub"><b>Comm Code:</b> {comm_code or 'N/A'}</div>
+                <div class="product-sub"><b>Special Inst:</b> {special_inst or 'N/A'}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    if user_role == "Warehouse Management View":
+        status_current = safe_string(row.get(status_current_col, "")) if status_current_col else ""
+        replen_cls = safe_string(row.get(replen_cls_col, "")) if replen_cls_col else ""
+        manufacturer = safe_string(row.get(manufacturer_col, "")) if manufacturer_col else ""
+        mfg_id = safe_string(row.get(mfg_id_col, "")) if mfg_id_col else ""
+        mfg_item = safe_string(row.get(mfg_item_col, "")) if mfg_item_col else ""
+        msds_val = safe_string(row.get(msds_col, "")) if msds_col else ""
+        whmis_required = bool(row.get("WHMIS_Required", False))
 
         st.markdown(
             f"""
             <div class="detail-box">
-                <div class="product-sub"><b>Status Current:</b> {status_current or 'N/A'}</div>
-                <div class="product-sub"><b>Replen Cls:</b> {replen_cls or 'N/A'}</div>
-                <div class="product-sub"><b>Special Inst:</b> {special_inst or 'N/A'}</div>
-                <div class="product-sub"><b>Std UOM:</b> {uom_val or 'N/A'}</div>
-                <div class="product-sub"><b>End Use Code:</b> {end_use_val or 'N/A'}</div>
+                <div class="product-sub"><b>Location:</b> {location_val or 'N/A'}</div>
                 <div class="product-sub"><b>Qty On Hand:</b> {int(qty_on_hand) if pd.notna(qty_on_hand) else 'N/A'}</div>
                 <div class="product-sub"><b>Qty Avail:</b> {int(qty_avail) if pd.notna(qty_avail) else 'N/A'}</div>
-                <div class="product-sub"><b>Manufacturer Name:</b> {manufacturer or 'N/A'}</div>
+                <div class="product-sub"><b>Stock Insight:</b> {status}</div>
+                <div class="product-sub"><b>Status Current:</b> {status_current or 'N/A'}</div>
+                <div class="product-sub"><b>Replen Cls:</b> {replen_cls or 'N/A'}</div>
+                <div class="product-sub"><b>WHMIS Required:</b> {'Yes' if whmis_required else 'No'}</div>
+                <div class="product-sub"><b>MSDS ID:</b> {msds_val or 'N/A'}</div>
+                <div class="product-sub"><b>Manufacturer:</b> {manufacturer or 'N/A'}</div>
                 <div class="product-sub"><b>Mfg ID:</b> {mfg_id or 'N/A'}</div>
                 <div class="product-sub"><b>Mfg Itm ID:</b> {mfg_item or 'N/A'}</div>
-                <div class="product-sub"><b>Vendor Name:</b> {vendor_val or 'N/A'}</div>
-                <div class="product-sub"><b>Currency:</b> {currency or 'N/A'}</div>
-                <div class="product-sub"><b>Unit Cost:</b> {unit_cost if safe_string(unit_cost) else 'N/A'}</div>
-                <div class="product-sub"><b>Code:</b> {code_val or 'N/A'}</div>
-                <div class="product-sub"><b>Comm Code:</b> {comm_code or 'N/A'}</div>
-                <div class="product-sub"><b>MSDS ID:</b> {msds_val or 'N/A'}</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    max_qty = int(qty_avail) if pd.notna(qty_avail) and qty_avail > 0 else 0
+    if user_role == "Business Unit View":
+        max_qty = int(qty_avail) if pd.notna(qty_avail) and qty_avail > 0 else 0
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        qty_to_add = st.number_input(
-            "Qty",
-            min_value=1,
-            max_value=max(1, max_qty) if max_qty > 0 else 1,
-            value=1,
-            step=1,
-            key=f"qty_add_{idx_prefix}_{item_val}",
-            disabled=(max_qty == 0),
-        )
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            qty_to_add = st.number_input(
+                "Qty",
+                min_value=1,
+                max_value=max(1, max_qty) if max_qty > 0 else 1,
+                value=1,
+                step=1,
+                key=f"qty_add_{idx_prefix}_{item_val}",
+                disabled=(max_qty == 0),
+            )
 
-    with c2:
-        if st.button("Add to cart", key=f"add_{idx_prefix}_{item_val}", disabled=(max_qty == 0)):
-            ok, msg = add_to_cart(row, col_map, int(qty_to_add))
-            if ok:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
+        with c2:
+            if st.button("Add to cart", key=f"add_{idx_prefix}_{item_val}", disabled=(max_qty == 0)):
+                ok, msg = add_to_cart(row, col_map, int(qty_to_add))
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 # =========================================================
-# CUSTOMER SEARCH RESULTS
+# BUSINESS UNIT VIEW
 # =========================================================
-if not employee_view:
-    st.markdown('<div class="section-box"><div class="section-title">Catalogue search</div>', unsafe_allow_html=True)
+if is_business_unit_view:
+    st.markdown('<div class="section-box"><div class="section-title">Business Unit Catalogue</div>', unsafe_allow_html=True)
 
     browse_df = filtered_df.head(30)
     if browse_df.empty:
@@ -1060,77 +1070,164 @@ if not employee_view:
         browse_cols = st.columns(3)
         for i, (_, row) in enumerate(browse_df.iterrows()):
             with browse_cols[i % 3]:
-                render_product_card(row, f"browse_{i}", employee_view=False)
+                render_product_card(row, f"browse_{i}", user_role=user_role)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================================================
-# EMPLOYEE INVENTORY VIEW
+# INTERNAL VIEW: INVENTORY PLANNING / WAREHOUSE MANAGEMENT
 # =========================================================
-if employee_view:
-    st.markdown('<div class="section-box"><div class="section-title">Employee inventory view</div>', unsafe_allow_html=True)
+if is_internal_view:
+    internal_title = user_role
+    st.markdown(f'<div class="section-box"><div class="section-title">{internal_title}</div>', unsafe_allow_html=True)
 
-    insight_c1, insight_c2, insight_c3, insight_c4 = st.columns(4)
+    sort_options = {
+        "Inventory Planning View": ["Availability", "Avg Daily Usage", "Name", "Unit cost", "Days of Supply"],
+        "Warehouse Management View": ["Availability", "Location", "Name", "Unit cost", "Days of Supply"],
+    }
 
-    low_risk_count = int((filtered_df["Stock_Status"] == "Low / Risk of Stockout").sum())
-    medium_count = int((filtered_df["Stock_Status"] == "Medium").sum())
-    slow_moving_count = int(filtered_df["Slow_Moving_Flag"].fillna(False).sum())
-    whmis_count = int(filtered_df["WHMIS_Required"].fillna(False).sum())
-
-    insight_c1.metric("Stockout Risk Items", low_risk_count)
-    insight_c2.metric("Medium Supply Items", medium_count)
-    insight_c3.metric("Slow Moving Items", slow_moving_count)
-    insight_c4.metric("WHMIS Items", whmis_count)
-
-    employee_sort_option = st.selectbox(
+    internal_sort_option = st.selectbox(
         "Sort results by",
-        ["Availability", "Avg Daily Usage", "Name", "Unit cost", "Days of Supply"]
+        sort_options[user_role]
     )
 
-    employee_df = filtered_df.copy()
+    internal_df = filtered_df.copy()
 
-    if employee_sort_option == "Availability":
-        employee_df = employee_df.sort_values(by="Qty_Avail_Num", ascending=False, na_position="last")
-    elif employee_sort_option == "Avg Daily Usage":
-        employee_df = employee_df.sort_values(by="Avg_Daily_Usage", ascending=False, na_position="last")
-    elif employee_sort_option == "Days of Supply":
-        employee_df = employee_df.sort_values(by="Days_of_Supply", ascending=True, na_position="last")
-    elif employee_sort_option == "Name" and col_map.get("Name"):
-        employee_df = employee_df.sort_values(by=col_map["Name"], ascending=True, na_position="last")
-    elif employee_sort_option == "Unit cost" and col_map.get("Unit Cost"):
+    if internal_sort_option == "Availability":
+        internal_df = internal_df.sort_values(by="Qty_Avail_Num", ascending=False, na_position="last")
+    elif internal_sort_option == "Avg Daily Usage":
+        internal_df = internal_df.sort_values(by="Avg_Daily_Usage", ascending=False, na_position="last")
+    elif internal_sort_option == "Days of Supply":
+        internal_df = internal_df.sort_values(by="Days_of_Supply", ascending=True, na_position="last")
+    elif internal_sort_option == "Location" and col_map.get("Location"):
+        internal_df = internal_df.sort_values(by=col_map["Location"], ascending=True, na_position="last")
+    elif internal_sort_option == "Name" and col_map.get("Name"):
+        internal_df = internal_df.sort_values(by=col_map["Name"], ascending=True, na_position="last")
+    elif internal_sort_option == "Unit cost" and col_map.get("Unit Cost"):
         cost_col = col_map["Unit Cost"]
-        employee_df["_unit_cost_num"] = pd.to_numeric(employee_df[cost_col], errors="coerce")
-        employee_df = employee_df.sort_values(by="_unit_cost_num", ascending=True, na_position="last")
+        internal_df["_unit_cost_num"] = pd.to_numeric(internal_df[cost_col], errors="coerce")
+        internal_df = internal_df.sort_values(by="_unit_cost_num", ascending=True, na_position="last")
 
-    employee_results_to_show = st.selectbox(
+    internal_results_to_show = st.selectbox(
         "Number of results to display",
         [12, 16, 20, 24, 28, 30, 40, 50, 75, 100],
         index=5,
+        key=f"results_{user_role}"
     )
 
-    employee_grid_rows = employee_df.head(employee_results_to_show)
+    internal_grid_rows = internal_df.head(internal_results_to_show)
 
-    if employee_grid_rows.empty:
+    if internal_grid_rows.empty:
         st.info("No items match the current filters.")
     else:
-        employee_cols = st.columns(3)
-        for i, (_, row) in enumerate(employee_grid_rows.iterrows()):
-            with employee_cols[i % 3]:
-                render_product_card(row, f"employee_grid_{i}", employee_view=True)
+        internal_cols = st.columns(3)
+        for i, (_, row) in enumerate(internal_grid_rows.iterrows()):
+            with internal_cols[i % 3]:
+                render_product_card(row, f"internal_grid_{i}", user_role=user_role)
 
-        remaining_results = len(employee_df) - len(employee_grid_rows)
+        remaining_results = len(internal_df) - len(internal_grid_rows)
         if remaining_results > 0:
             st.caption(
-                f"Showing {len(employee_grid_rows)} of {len(employee_df)} results. "
+                f"Showing {len(internal_grid_rows)} of {len(internal_df)} results. "
                 f"Refine filters or increase the display count to see more."
             )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown('<div class="section-box"><div class="section-title">Submitted employee requests</div>', unsafe_allow_html=True)
+# =========================================================
+# INTERNAL IMAGE MANAGEMENT ONLY
+# =========================================================
+if is_internal_view:
+    st.markdown('<div class="section-box"><div class="section-title">Internal Image Management</div>', unsafe_allow_html=True)
+    st.caption("Images are read from GitHub. Changes made here affect only the current app session until you download the updated CSV and replace item_image_mapping.csv in GitHub.")
+
+    img_item_col = col_map.get("Item")
+    img_name_col = col_map.get("Name")
+
+    image_admin_df = st.session_state.inventory_view.copy()
+
+    if img_item_col and img_item_col in image_admin_df.columns:
+        image_admin_df["_item_label"] = image_admin_df.apply(
+            lambda r: f"{safe_string(r.get(img_item_col, ''))} - {safe_string(r.get(img_name_col, ''))}" if img_name_col else safe_string(r.get(img_item_col, '')),
+            axis=1
+        )
+
+        item_options = image_admin_df["_item_label"].tolist()
+        selected_item_label = st.selectbox("Select item to manage image", item_options)
+
+        selected_row = image_admin_df[image_admin_df["_item_label"] == selected_item_label].iloc[0]
+        selected_item_id = safe_string(selected_row.get(img_item_col, ""))
+        current_image_url = st.session_state.get("image_lookup", {}).get(selected_item_id, "")
+
+        c1, c2 = st.columns([1, 2])
+
+        with c1:
+            st.markdown("**Current image**")
+            st.image(current_image_url or PLACEHOLDER_IMAGE_URL, use_container_width=True)
+
+        with c2:
+            new_image_url = st.text_input(
+                "GitHub raw image URL",
+                value=current_image_url,
+                key=f"image_url_input_{selected_item_id}"
+            )
+
+            b1, b2, b3 = st.columns(3)
+
+            with b1:
+                if st.button("Save image mapping", key=f"save_image_mapping_{selected_item_id}"):
+                    ok, msg = upsert_image_mapping(selected_item_id, new_image_url)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+            with b2:
+                if st.button("Remove image mapping", key=f"remove_image_mapping_{selected_item_id}"):
+                    ok, msg = remove_image_mapping(selected_item_id)
+                    if ok:
+                        st.success(msg)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+            with b3:
+                if st.button("Reload GitHub mappings", key="reload_github_mappings"):
+                    load_image_map_from_github.clear()
+                    st.session_state.image_map_df = load_image_map_from_github().copy()
+                    sync_image_lookup()
+                    st.success("Image mappings reloaded from GitHub.")
+                    st.rerun()
+
+            st.caption("Use raw GitHub image links, for example: https://raw.githubusercontent.com/.../images/item_100001.png")
+
+    export_df = st.session_state.get("image_map_df", pd.DataFrame(columns=["Item", "image_url"])).copy()
+    export_df = export_df.sort_values(by="Item", ascending=True, na_position="last")
+
+    st.download_button(
+        label="Download updated image mapping CSV",
+        data=to_csv_bytes(export_df),
+        file_name="item_image_mapping.csv",
+        mime="text/csv",
+    )
+
+    with st.expander("Current image mappings"):
+        if export_df.empty:
+            st.info("No image mappings are currently loaded.")
+        else:
+            st.dataframe(export_df, use_container_width=True, height=250)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================================
+# INTERNAL SUBMITTED REQUESTS VIEW
+# =========================================================
+if is_internal_view:
+    st.markdown('<div class="section-box"><div class="section-title">Submitted Business Unit Requests</div>', unsafe_allow_html=True)
 
     if st.session_state.orders_log.empty:
-        st.info("No employee requests have been submitted in this session yet.")
+        st.info("No business unit requests have been submitted in this session yet.")
     else:
         st.dataframe(st.session_state.orders_log, use_container_width=True, height=280)
 
@@ -1138,7 +1235,7 @@ if employee_view:
         st.download_button(
             label="Download Submitted Requests",
             data=orders_xlsx,
-            file_name="submitted_employee_requests.xlsx",
+            file_name="submitted_business_unit_requests.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -1153,6 +1250,9 @@ if st.button("Reset current uploaded session"):
     st.session_state.orders_log = pd.DataFrame(
         columns=["Order Time", "Customer Name", "Department", "Item", "Description", "Order Qty"]
     )
+    load_image_map_from_github.clear()
+    st.session_state.image_map_df = load_image_map_from_github().copy()
+    sync_image_lookup()
     refresh_inventory()
     st.success("Uploaded session inventory has been reset.")
     st.rerun()
