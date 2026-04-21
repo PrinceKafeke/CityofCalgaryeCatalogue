@@ -3,7 +3,7 @@
 ## Overview
 This repository contains a **Streamlit-based eCatalogue prototype** built for the **City of Calgary General Stores warehouse**.
 
-The purpose of the app is to make warehouse inventory easier to access, search, and understand for different internal users. Instead of relying only on PeopleSoft reports and manual inquiries, this prototype provides a more user-friendly catalogue interface with role-based views.
+The purpose of the app is to make warehouse inventory easier to access, search, and understand for different internal users. This prototype provides a more user-friendly catalogue interface with role-based views.
 
 The app supports three main user views:
 
