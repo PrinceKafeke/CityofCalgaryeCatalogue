@@ -107,7 +107,7 @@ The app supports item images through a **GitHub-hosted image mapping file**.
 Each item image is linked using a CSV file called:
 
 ```text
-item_image_mapping.csv
+item_image_mapping_example.csv
 ```
 
 This file maps an item number to an image URL.
