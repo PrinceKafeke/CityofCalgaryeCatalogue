@@ -21,7 +21,7 @@ st.set_page_config(
 # =========================================================
 LOGO_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/calgary_logo.png"
 PLACEHOLDER_IMAGE_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/images/placeholder.png"
-IMAGE_MAP_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/item_image_mapping.csv"
+IMAGE_MAP_URL = "https://raw.githubusercontent.com/PrinceKafeke/CityofCalgaryeCatalogue/main/item_image_mapping_example.csv"
 
 # =========================================================
 # STYLE
